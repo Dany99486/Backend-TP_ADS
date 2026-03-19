@@ -1,0 +1,7 @@
+Flask
+pytest
+psycopg2-binary
+requests
+gunicorn
+urllib3>=2.5.0
+flask-cors

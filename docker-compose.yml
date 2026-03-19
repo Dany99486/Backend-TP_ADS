@@ -1,0 +1,51 @@
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: movies_user
+      POSTGRES_PASSWORD: movies_pass
+      POSTGRES_DB: movies_db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U movies_user -d movies_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: movies_db
+      DATABASE_USER: movies_user
+      DATABASE_PASSWORD: movies_pass
+    ports:
+      - "80:80"
+    volumes:
+      - ./:/app
+    command: ["sh", "-c", "python app.py"]
+
+  populate:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: movies_db
+      DATABASE_USER: movies_user
+      DATABASE_PASSWORD: movies_pass
+    volumes:
+      - ./:/app
+      - data:/data
+    command: ["sh", "-c", "python setup_bd.py || true"]
+
+volumes:
+  db_data:
+  data:

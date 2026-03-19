@@ -1,0 +1,92 @@
+name: CI/CD
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  actions: read
+
+on:
+  push:
+    branches: [ main, staging, development ]
+  pull_request:
+    branches: [ main, staging, development ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          PYTHON_EXEC="$(python -c 'import sys; print(sys.executable)')"
+          echo "PYTHON_EXEC=$PYTHON_EXEC" >> "$GITHUB_ENV"
+          # Instala dependências e ferramentas de análise estática no ambiente do runner
+          "$PYTHON_EXEC" -m pip install --upgrade "pip>=25.3" "setuptools>=78.1.1" wheel
+          "$PYTHON_EXEC" -m pip install -r requirements.txt -c constraints.txt
+          "$PYTHON_EXEC" -m pip install --upgrade pip-audit
+          "$PYTHON_EXEC" -m pip install xenon
+
+      - name: Ruff Linter
+        uses: astral-sh/ruff-action@v3
+        with:
+          src: "."
+
+      - name: Run Xenon Complexity Analysis
+        run: |
+          xenon . -b D -m C -a C --exclude tests
+
+      - name: Perform Bandit Analysis
+        uses: PyCQA/bandit-action@v1
+
+      - name: Run pip-audit
+        env:
+          PIP_CONSTRAINT: constraints.txt
+        run: |
+          "$PYTHON_EXEC" -m pip_audit --requirement requirements.txt
+
+      - name: Start Docker Services (DB, Web, Populate)
+        run: docker compose up -d --build
+
+      - name: Install Netcat
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
+
+      - name: Wait for API to be Ready
+        run: timeout 60s bash -c 'until nc -z localhost 80; do echo "Aguardando API em localhost:80..."; sleep 3; done'
+
+      - name: Run tests
+        env:
+          PYTHONPATH: .
+          API_HOST: http://localhost
+        run: |
+          "$PYTHON_EXEC" -m pytest
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t ghcr.io/${{ github.repository_owner }}/ads-backend:latest .
+
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/ads-backend:latest
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - name: Trigger Render Deploy via webhook
+        run: |
+          curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
